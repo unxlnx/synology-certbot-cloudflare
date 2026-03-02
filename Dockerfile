@@ -1,4 +1,4 @@
-FROM alpine:3.19
+FROM alpine:3.23
 
 LABEL description="synology-certbot-cloudflare: Certbot with Cloudflare DNS plugin and Synology deploy support"
 
