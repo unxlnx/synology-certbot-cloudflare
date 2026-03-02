@@ -242,7 +242,7 @@ To use the pre-built image instead of building locally, replace the `build:` key
 ```yaml
 services:
   synology-certbot-cloudflare:
-    image: ghcr.io/youruser/synology-certbot-cloudflare:latest
+    image: ghcr.io/unxlnx/synology-certbot-cloudflare:latest
 ```
 
 ---
