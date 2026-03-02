@@ -1,0 +1,17 @@
+services:
+  synology-certbot-cloudflare:
+    build: .
+    container_name: synology-certbot-cloudflare
+    restart: unless-stopped
+    env_file:
+      - ./config/.env
+    volumes:
+      - synology-certbot-cloudflare-certs:/etc/letsencrypt
+      - synology-certbot-cloudflare-data:/var/lib/letsencrypt
+      - synology-certbot-cloudflare-logs:/var/log/letsencrypt
+      - ./config:/config
+
+volumes:
+  synology-certbot-cloudflare-certs:
+  synology-certbot-cloudflare-data:
+  synology-certbot-cloudflare-logs:
