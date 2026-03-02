@@ -32,7 +32,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # Required for multi-platform (amd64 + arm64) builds
       - name: Set up QEMU
@@ -140,7 +140,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # QEMU allows building arm64 binaries on amd64 GitHub runners
       - name: Set up QEMU

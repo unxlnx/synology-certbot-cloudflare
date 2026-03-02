@@ -104,9 +104,43 @@ save_domain_snapshot() {
   echo "$LOG_PREFIX Domain snapshot saved: $(cat $DOMAINS_SNAPSHOT | tr '\n' ' ')"
 }
 
-domains_changed() {
+# ─── Domain change detection ──────────────────────────────────────────────────
+# Returns: "added", "removed", "both", or "none"
+get_domain_change_type() {
   if [[ ! -f "$DOMAINS_SNAPSHOT" ]]; then
-    echo "$LOG_PREFIX No domain snapshot found — treating as changed"
+    echo "added"
+    return
+  fi
+
+  local current
+  current=$(normalize_domains "$CERT_DOMAINS")
+  local previous
+  previous=$(cat "$DOMAINS_SNAPSHOT")
+
+  if [[ "$current" == "$previous" ]]; then
+    echo "none"
+    return
+  fi
+
+  local added
+  added=$(comm -23 <(echo "$current") <(echo "$previous") | tr '\n' ' ' | xargs)
+  local removed
+  removed=$(comm -13 <(echo "$current") <(echo "$previous") | tr '\n' ' ' | xargs)
+
+  if [[ -n "$added" && -n "$removed" ]]; then
+    echo "both"
+  elif [[ -n "$added" ]]; then
+    echo "added"
+  elif [[ -n "$removed" ]]; then
+    echo "removed"
+  else
+    echo "none"
+  fi
+}
+
+# ─── Log domain changes ───────────────────────────────────────────────────────
+log_domain_changes() {
+  if [[ ! -f "$DOMAINS_SNAPSHOT" ]]; then
     return 0
   fi
 
@@ -115,24 +149,23 @@ domains_changed() {
   local previous
   previous=$(cat "$DOMAINS_SNAPSHOT")
 
-  if [[ "$current" != "$previous" ]]; then
-    local added
-    added=$(comm -23 <(echo "$current") <(echo "$previous") | tr '\n' ' ')
-    local removed
-    removed=$(comm -13 <(echo "$current") <(echo "$previous") | tr '\n' ' ')
+  local added
+  added=$(comm -23 <(echo "$current") <(echo "$previous") | tr '\n' ' ' | xargs)
+  local removed
+  removed=$(comm -13 <(echo "$current") <(echo "$previous") | tr '\n' ' ' | xargs)
 
-    [[ -n "$added" ]]   && echo "$LOG_PREFIX New domains detected: $added"
-    [[ -n "$removed" ]] && echo "$LOG_PREFIX Removed domains detected: $removed"
-    return 0
-  fi
-
-  return 1
+  [[ -n "$added" ]]   && echo "$LOG_PREFIX   Added   : $added"
+  [[ -n "$removed" ]] && echo "$LOG_PREFIX   Removed : $removed"
+  return 0
 }
 
 # ─── Trigger helpers ─────────────────────────────────────────────────────────
 set_trigger() {
-  echo "$1" > "$TRIGGER_REASON_FILE"
-  touch "$TRIGGER_FILE"
+  local reason="$1"
+  echo "$LOG_PREFIX Writing trigger: $reason"
+  echo "$reason" > "$TRIGGER_REASON_FILE" || { echo "$LOG_PREFIX ERROR: could not write $TRIGGER_REASON_FILE" >&2; return 1; }
+  touch "$TRIGGER_FILE" || { echo "$LOG_PREFIX ERROR: could not write $TRIGGER_FILE" >&2; return 1; }
+  echo "$LOG_PREFIX Trigger set OK — main loop will pick up within 10 seconds"
 }
 
 clear_trigger() {
@@ -159,7 +192,6 @@ cert_needs_renewal() {
     return 0
   fi
 
-  # Use openssl -checkend to avoid date parsing entirely
   local threshold_seconds
   threshold_seconds=$(( RENEW_DAYS_BEFORE * 86400 ))
 
@@ -172,7 +204,6 @@ cert_needs_renewal() {
     now_epoch=$(date +%s)
     local days_until_expiry
     days_until_expiry=$(( (expiry_epoch - now_epoch) / 86400 ))
-
     echo "$LOG_PREFIX Cert for $primary_domain expires in $days_until_expiry days (threshold: $RENEW_DAYS_BEFORE) — renewing"
     return 0
   fi
@@ -185,7 +216,6 @@ cert_needs_renewal() {
   now_epoch=$(date +%s)
   local days_until_expiry
   days_until_expiry=$(( (expiry_epoch - now_epoch) / 86400 ))
-
   echo "$LOG_PREFIX Cert for $primary_domain expires in $days_until_expiry days (threshold: $RENEW_DAYS_BEFORE) — OK"
   return 1
 }
@@ -197,8 +227,32 @@ run_certbot() {
   domain_args=$(build_domain_args)
 
   local force_flag=""
-  if [[ "$FORCE_RENEW" == "true" ]]; then
+  local expand_flag=""
+
+  case "${CERT_TRIGGER_REASON:-}" in
+    domain_added)
+      expand_flag="--expand"
+      echo "$LOG_PREFIX Using --expand (domains added)"
+      ;;
+    domain_removed)
+      force_flag="--force-renewal"
+      echo "$LOG_PREFIX Using --force-renewal (domains removed)"
+      ;;
+    domain_both)
+      force_flag="--force-renewal"
+      echo "$LOG_PREFIX Using --force-renewal (domains added and removed)"
+      ;;
+    force_renew)
+      force_flag="--force-renewal"
+      echo "$LOG_PREFIX Using --force-renewal (FORCE_RENEW requested)"
+      ;;
+    *)
+      ;;
+  esac
+
+  if [[ "$FORCE_RENEW" == "true" && -z "$force_flag" ]]; then
     force_flag="--force-renewal"
+    echo "$LOG_PREFIX Using --force-renewal (FORCE_RENEW=true)"
   fi
 
   echo "$LOG_PREFIX Running certbot against: $ACME_SERVER"
@@ -214,6 +268,7 @@ run_certbot() {
     --server "$ACME_SERVER" \
     --deploy-hook /scripts/deploy-hook.sh \
     $force_flag \
+    $expand_flag \
     $domain_args \
     2>&1
 
@@ -235,41 +290,79 @@ run_certbot() {
   save_domain_snapshot
 }
 
-# ─── inotify watcher ─────────────────────────────────────────────────────────
+# ─── .env watcher (polling) ───────────────────────────────────────────────────
+handle_env_change() {
+  # Runs with set -e disabled so nothing silently kills the watcher
+  set +e
+
+  load_config
+
+  if ! validate_config; then
+    echo "$LOG_PREFIX .env reload failed validation — ignoring change"
+    set -e
+    return 0
+  fi
+
+  write_cf_ini
+
+  if [[ "$FORCE_RENEW" == "true" ]]; then
+    echo "$LOG_PREFIX FORCE_RENEW=true detected"
+    set_trigger "force_renew"
+    set -e
+    return 0
+  fi
+
+  local change_type
+  change_type=$(get_domain_change_type)
+  echo "$LOG_PREFIX Domain change type: $change_type"
+
+  case "$change_type" in
+    added)
+      echo "$LOG_PREFIX Domain change detected (added):"
+      log_domain_changes
+      set_trigger "domain_added"
+      ;;
+    removed)
+      echo "$LOG_PREFIX Domain change detected (removed):"
+      log_domain_changes
+      set_trigger "domain_removed"
+      ;;
+    both)
+      echo "$LOG_PREFIX Domain change detected (added and removed):"
+      log_domain_changes
+      set_trigger "domain_both"
+      ;;
+    none)
+      echo "$LOG_PREFIX .env changed but no domain or force-renew change detected"
+      ;;
+  esac
+
+  set -e
+  return 0
+}
+
 start_env_watcher() {
-  echo "$LOG_PREFIX Starting inotify watcher on $ENV_FILE"
+  echo "$LOG_PREFIX Starting .env file watcher (polling mode)"
 
-  inotifywait -m -e close_write,modify,create,moved_to "$(dirname $ENV_FILE)" 2>/dev/null \
-  | while read -r dir event file; do
-      # Only act on .env changes
-      if [[ "$file" != ".env" ]]; then
-        continue
-      fi
+  local last_checksum
+  last_checksum=$(md5sum "$ENV_FILE" 2>/dev/null | awk '{print $1}' || echo "none")
 
-      echo "$LOG_PREFIX .env changed (event: $event) — reloading config"
+  while true; do
+    sleep 10
 
-      # Debounce — editors fire multiple events on a single save
+    local current_checksum
+    current_checksum=$(md5sum "$ENV_FILE" 2>/dev/null | awk '{print $1}' || echo "none")
+
+    if [[ "$current_checksum" != "$last_checksum" ]]; then
+      echo "$LOG_PREFIX .env changed — reloading config"
+      last_checksum="$current_checksum"
+
+      # Debounce
       sleep 2
 
-      load_config
-
-      if ! validate_config 2>/dev/null; then
-        echo "$LOG_PREFIX .env reload failed validation — ignoring change"
-        continue
-      fi
-
-      write_cf_ini
-
-      if [[ "$FORCE_RENEW" == "true" ]]; then
-        echo "$LOG_PREFIX FORCE_RENEW detected in .env change"
-        set_trigger "force_renew"
-      elif domains_changed; then
-        echo "$LOG_PREFIX Domain change detected — triggering cert renewal"
-        set_trigger "domain_change"
-      else
-        echo "$LOG_PREFIX .env changed but no actionable cert change detected"
-      fi
-    done
+      handle_env_change || echo "$LOG_PREFIX WARNING: handle_env_change failed — watcher continuing"
+    fi
+  done
 }
 
 # ─── Main cert check ─────────────────────────────────────────────────────────
@@ -281,13 +374,22 @@ do_cert_check() {
   validate_config || { echo "$LOG_PREFIX Skipping cert check — config invalid"; return; }
   write_cf_ini
 
-  if [[ "$reason" == "domain_change" || "$reason" == "force_renew" ]]; then
-    run_certbot
-  elif cert_needs_renewal; then
-    run_certbot
-  else
-    echo "$LOG_PREFIX Cert is valid — no action needed"
-  fi
+  export CERT_TRIGGER_REASON="$reason"
+
+  case "$reason" in
+    domain_added|domain_removed|domain_both|force_renew)
+      run_certbot
+      ;;
+    *)
+      if cert_needs_renewal; then
+        run_certbot
+      else
+        echo "$LOG_PREFIX Cert is valid — no action needed"
+      fi
+      ;;
+  esac
+
+  unset CERT_TRIGGER_REASON
 }
 
 # ─── Log versions ─────────────────────────────────────────────────────────────
@@ -323,7 +425,7 @@ echo "$LOG_PREFIX ════════════════════�
 
 save_domain_snapshot
 
-# Start inotify watcher in background
+# Start .env watcher in background
 start_env_watcher &
 WATCHER_PID=$!
 
@@ -332,7 +434,13 @@ trap 'echo "$LOG_PREFIX Shutting down..."; kill "$WATCHER_PID" 2>/dev/null; exit
 
 # Initial cert check at startup
 do_cert_check "startup"
-clear_trigger
+
+# Only clear trigger if watcher did not set one during startup cert check
+if [[ -f "$TRIGGER_FILE" ]]; then
+  echo "$LOG_PREFIX Trigger was set during startup check — preserving for main loop"
+else
+  clear_trigger
+fi
 
 # ─── Main loop ───────────────────────────────────────────────────────────────
 SLEEP_SECONDS=$(( CHECK_INTERVAL_HOURS * 3600 ))
@@ -345,6 +453,7 @@ while true; do
 
     if [[ -f "$TRIGGER_FILE" ]]; then
       reason=$(get_trigger_reason)
+      echo "$LOG_PREFIX Trigger file found: $reason"
       clear_trigger
       do_cert_check "$reason"
       elapsed=0
