@@ -333,7 +333,6 @@ run_certbot() {
     --dns-cloudflare-credentials "$CF_INI" \
     --dns-cloudflare-propagation-seconds 30 \
     --server "$ACME_SERVER" \
-    --deploy-hook /scripts/deploy-hook.sh \
     --key-type rsa \
     $force_flag \
     $expand_flag \
@@ -347,6 +346,12 @@ run_certbot() {
   fi
 
   echo "$LOG_PREFIX Certbot completed successfully"
+
+  # Call deploy hook directly rather than via --deploy-hook so its output isn't captured and
+  # re-printed by certbot (which adds a leading space to every line, breaking log consistency)
+  local lineage="/etc/letsencrypt/live/$(get_primary_domain)"
+  RENEWED_LINEAGE="$lineage" /scripts/deploy-hook.sh \
+    || echo "$LOG_PREFIX WARNING: deploy-hook returned non-zero"
 
   if [[ "$FORCE_RENEW" == "true" ]]; then
     echo "$LOG_PREFIX Resetting FORCE_RENEW=false in .env"

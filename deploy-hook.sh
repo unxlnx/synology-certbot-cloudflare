@@ -46,8 +46,8 @@ if [[ "$SYNOLOGY_DEPLOY" == "true" ]]; then
   echo "$LOG_PREFIX Authenticated with DSM (session: ${SID:0:8}...)"
 
   # Log cert key type — DSM requires RSA; ECDSA will cause error 5511
-  CERT_KEY_TYPE=$(openssl x509 -in "${RENEWED_LINEAGE}/cert.pem" -text -noout 2>/dev/null \
-    | grep "Public Key Algorithm" | head -1 | xargs || echo "unknown")
+  CERT_KEY_TYPE=$(openssl x509 -in "${RENEWED_LINEAGE}/cert.pem" -noout -text 2>/dev/null \
+    | awk '/Public Key Algorithm:/ {print $NF; exit}' || echo "unknown")
   echo "$LOG_PREFIX Cert key type: $CERT_KEY_TYPE"
 
   # Upload certificate — SynoToken must be in URL and X-SYNO-TOKEN header (DSM CSRF protection)
