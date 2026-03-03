@@ -89,6 +89,13 @@ get_primary_domain() {
   echo "${DOMAIN_LIST[0]}" | xargs | sed 's/^\*\.//'
 }
 
+get_cert_name() {
+  # Scopes the lineage name to the environment, e.g. example.com-staging or example.com-production.
+  # Keeps staging and production certs in separate directories within the same volume,
+  # avoiding -0001 suffix ambiguity when switching between environments.
+  echo "$(get_primary_domain)-${LETSENCRYPT_ENV}"
+}
+
 build_domain_args() {
   local args=""
   IFS=',' read -ra DOMAIN_LIST <<< "$CERT_DOMAINS"
@@ -184,9 +191,9 @@ get_deploy_status_field() {
 }
 
 retry_synology_deploy() {
-  local primary_domain lineage
-  primary_domain=$(get_primary_domain)
-  lineage="/etc/letsencrypt/live/${primary_domain}"
+  local cert_name lineage
+  cert_name=$(get_cert_name)
+  lineage="/etc/letsencrypt/live/${cert_name}"
 
   if [[ ! -f "${lineage}/fullchain.pem" ]]; then
     echo "$LOG_PREFIX No cert found at $lineage — skipping Synology deploy retry"
@@ -203,9 +210,9 @@ ensure_synology_deployed() {
     return 0
   fi
 
-  local primary_domain lineage
-  primary_domain=$(get_primary_domain)
-  lineage="/etc/letsencrypt/live/${primary_domain}"
+  local cert_name lineage
+  cert_name=$(get_cert_name)
+  lineage="/etc/letsencrypt/live/${cert_name}"
 
   if [[ ! -f "${lineage}/fullchain.pem" ]]; then
     echo "$LOG_PREFIX SYNOLOGY_DEPLOY=true but no cert exists yet — will deploy after first issuance"
@@ -245,9 +252,9 @@ ensure_synology_deployed() {
 
 # ─── Cert renewal check ──────────────────────────────────────────────────────
 cert_needs_renewal() {
-  local primary_domain
-  primary_domain=$(get_primary_domain)
-  local cert_path="/etc/letsencrypt/live/${primary_domain}/fullchain.pem"
+  local cert_name cert_path
+  cert_name=$(get_cert_name)
+  cert_path="/etc/letsencrypt/live/${cert_name}/fullchain.pem"
 
   if [[ "$FORCE_RENEW" == "true" ]]; then
     echo "$LOG_PREFIX FORCE_RENEW=true — forcing renewal"
@@ -255,7 +262,7 @@ cert_needs_renewal() {
   fi
 
   if [[ ! -f "$cert_path" ]]; then
-    echo "$LOG_PREFIX No existing cert found for $primary_domain — will obtain"
+    echo "$LOG_PREFIX No existing cert found for $cert_name — will obtain"
     return 0
   fi
 
@@ -271,7 +278,7 @@ cert_needs_renewal() {
     now_epoch=$(date +%s)
     local days_until_expiry
     days_until_expiry=$(( (expiry_epoch - now_epoch) / 86400 ))
-    echo "$LOG_PREFIX Cert for $primary_domain expires in $days_until_expiry days (threshold: $RENEW_DAYS_BEFORE) — renewing"
+    echo "$LOG_PREFIX Cert for $cert_name expires in $days_until_expiry days (threshold: $RENEW_DAYS_BEFORE) — renewing"
     return 0
   fi
 
@@ -283,7 +290,7 @@ cert_needs_renewal() {
   now_epoch=$(date +%s)
   local days_until_expiry
   days_until_expiry=$(( (expiry_epoch - now_epoch) / 86400 ))
-  echo "$LOG_PREFIX Cert for $primary_domain expires in $days_until_expiry days (threshold: $RENEW_DAYS_BEFORE) — OK"
+  echo "$LOG_PREFIX Cert for $cert_name expires in $days_until_expiry days (threshold: $RENEW_DAYS_BEFORE) — OK"
   return 1
 }
 
@@ -325,6 +332,10 @@ run_certbot() {
   echo "$LOG_PREFIX Running certbot against: $ACME_SERVER"
 
   # shellcheck disable=SC2086
+  local cert_name
+  cert_name=$(get_cert_name)
+
+  # shellcheck disable=SC2086
   certbot certonly \
     --non-interactive \
     --agree-tos \
@@ -333,6 +344,7 @@ run_certbot() {
     --dns-cloudflare-credentials "$CF_INI" \
     --dns-cloudflare-propagation-seconds 30 \
     --server "$ACME_SERVER" \
+    --cert-name "$cert_name" \
     --key-type rsa \
     $force_flag \
     $expand_flag \
@@ -349,7 +361,7 @@ run_certbot() {
 
   # Call deploy hook directly rather than via --deploy-hook so its output isn't captured and
   # re-printed by certbot (which adds a leading space to every line, breaking log consistency)
-  local lineage="/etc/letsencrypt/live/$(get_primary_domain)"
+  local lineage="/etc/letsencrypt/live/${cert_name}"
   RENEWED_LINEAGE="$lineage" /scripts/deploy-hook.sh \
     || echo "$LOG_PREFIX WARNING: deploy-hook returned non-zero"
 
@@ -492,6 +504,7 @@ log_versions
 echo "$LOG_PREFIX ════════════════════════════════════════"
 echo "$LOG_PREFIX  synology-certbot-cloudflare starting"
 echo "$LOG_PREFIX  Environment : $LETSENCRYPT_ENV"
+echo "$LOG_PREFIX  Cert name   : $(get_cert_name)"
 echo "$LOG_PREFIX  Domains     : $CERT_DOMAINS"
 echo "$LOG_PREFIX  Check every : ${CHECK_INTERVAL_HOURS}h"
 echo "$LOG_PREFIX  Renew within: ${RENEW_DAYS_BEFORE} days"
