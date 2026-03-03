@@ -64,7 +64,7 @@ jobs:
       # The full multi-arch build happens in the publish job
       - name: Build image for scanning (amd64 only)
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: false
@@ -172,7 +172,7 @@ jobs:
 
       # Build and push both platforms — layer cache from build job makes this fast
       - name: Build and push multi-arch image to GHCR
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
