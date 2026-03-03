@@ -193,7 +193,6 @@ The deploy process:
 | Volume | Purpose |
 |---|---|
 | `synology-certbot-cloudflare-certs` | Certificate files (`/etc/letsencrypt`) |
-| `synology-certbot-cloudflare-data` | Certbot working data (`/var/lib/letsencrypt`) |
 | `synology-certbot-cloudflare-logs` | Certbot logs (`/var/log/letsencrypt`) |
 | `./config:/config` | Config directory — contains `.env`, generated `cloudflare.ini`, and deploy status |
 

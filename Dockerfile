@@ -31,6 +31,6 @@ COPY deploy-hook.sh /scripts/deploy-hook.sh
 
 RUN chmod +x /scripts/entrypoint.sh /scripts/deploy-hook.sh
 
-VOLUME ["/etc/letsencrypt", "/var/lib/letsencrypt", "/var/log/letsencrypt", "/config"]
+VOLUME ["/etc/letsencrypt", "/var/log/letsencrypt", "/config"]
 
 ENTRYPOINT ["/scripts/entrypoint.sh"]
