@@ -76,7 +76,7 @@ jobs:
           outputs: type=docker,dest=/tmp/image.tar
 
       - name: Upload image tarball for scan job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: docker-image
           path: /tmp/image.tar
