@@ -120,18 +120,26 @@ Create a scoped API token at https://dash.cloudflare.com/profile/api-tokens with
 
 Always test with `LETSENCRYPT_ENV=staging` first. The staging environment issues certificates that are not browser-trusted but lets you verify your DNS and Cloudflare setup without consuming production rate limits.
 
+Staging and production certificates are stored in **separate lineage directories** named after the environment:
+
+```
+/etc/letsencrypt/live/
+  example.com-staging/
+  example.com-production/
+```
+
+This means switching environments never causes cert conflicts or the `-0001` suffix ambiguity — each environment's cert is fully independent.
+
 When you are ready to go live:
 
 1. Set `LETSENCRYPT_ENV=production` in `config/.env`
-2. Set `FORCE_RENEW=true` to replace the staging cert immediately
-3. Save the file — the container detects the change and runs automatically
+2. Save the file — the container detects the change within ~10 seconds
 
 ```dotenv
 LETSENCRYPT_ENV=production
-FORCE_RENEW=true
 ```
 
-The container will issue a real trusted cert and auto-reset `FORCE_RENEW=false`.
+Because there is no existing production cert, the container will issue one automatically on the next check. No `FORCE_RENEW` or volume cleanup required — the staging cert remains untouched in its own directory.
 
 ---
 
@@ -154,7 +162,6 @@ CERT_DOMAINS=example.com,*.example.com,other.example.com
 Set `FORCE_RENEW=true` in `config/.env` and save. The container detects the change and immediately runs certbot with `--force-renewal`, regardless of the current cert's expiry. After a successful renewal `FORCE_RENEW` is automatically reset to `false`.
 
 Use this when:
-- Switching from staging to production
 - Domains have changed
 - A cert was corrupted or deleted
 - You want to rotate a cert early
@@ -186,7 +193,6 @@ The deploy process:
 | Volume | Purpose |
 |---|---|
 | `synology-certbot-cloudflare-certs` | Certificate files (`/etc/letsencrypt`) |
-| `synology-certbot-cloudflare-data` | Certbot working data (`/var/lib/letsencrypt`) |
 | `synology-certbot-cloudflare-logs` | Certbot logs (`/var/log/letsencrypt`) |
 | `./config:/config` | Config directory — contains `.env`, generated `cloudflare.ini`, and deploy status |
 
@@ -202,12 +208,13 @@ All output is timestamped uniformly:
 [2026-03-03 09:32:44] [synology-certbot-cloudflare] ════════════════════════════════════════
 [2026-03-03 09:32:44] [synology-certbot-cloudflare]  synology-certbot-cloudflare starting
 [2026-03-03 09:32:44] [synology-certbot-cloudflare]  Environment : production
+[2026-03-03 09:32:44] [synology-certbot-cloudflare]  Cert name   : example.com-production
 [2026-03-03 09:32:44] [synology-certbot-cloudflare]  Domains     : example.com,*.example.com
 [2026-03-03 09:32:44] [synology-certbot-cloudflare]  Check every : 12h
 [2026-03-03 09:32:44] [synology-certbot-cloudflare]  Renew within: 30 days
 [2026-03-03 09:32:44] [synology-certbot-cloudflare]  Synology    : true
 [2026-03-03 09:32:44] [synology-certbot-cloudflare] ════════════════════════════════════════
-[2026-03-03 09:32:45] [synology-certbot-cloudflare] Cert for example.com expires in 87 days (threshold: 30) — OK
+[2026-03-03 09:32:45] [synology-certbot-cloudflare] Cert for example.com-production expires in 87 days (threshold: 30) — OK
 [2026-03-03 09:32:45] [synology-certbot-cloudflare] Synology deploy up to date (last deployed: 2026-03-03 09:10:55)
 [2026-03-03 09:32:45] [synology-certbot-cloudflare] Sleeping 12h until next check...
 ```
@@ -310,6 +317,17 @@ Increase `--dns-cloudflare-propagation-seconds` in `entrypoint.sh` if your DNS c
 **Synology DSM upload fails with error 119**
 
 The DSM session token (SynoToken) was not accepted. Ensure the DSM user has full administrator privileges and that HTTPS access to the NAS is reachable from the container.
+
+**Upgrading from a version without env-scoped cert names**
+
+On first start after upgrading, the container will not find a cert at the new env-scoped path (e.g. `example.com-production`) and will issue a fresh one automatically. To avoid orphaned staging/production lineages sitting in the volume, wipe the cert volumes before starting:
+
+```bash
+docker compose down
+docker volume rm synology-certbot-cloudflare-certs \
+               synology-certbot-cloudflare-data \
+               synology-certbot-cloudflare-logs
+```
 
 **Synology DSM upload fails with error 5511**
 
