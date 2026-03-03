@@ -14,6 +14,7 @@ TRIGGER_FILE="/tmp/cert_trigger"
 TRIGGER_REASON_FILE="/tmp/cert_trigger_reason"
 DOMAINS_SNAPSHOT="/tmp/last_known_domains"
 ENV_FILE="/config/.env"
+DEPLOY_STATUS_FILE="/config/.synology_deploy_status"
 
 # ─── Load / reload config from .env ──────────────────────────────────────────
 load_config() {
@@ -174,6 +175,72 @@ clear_trigger() {
 
 get_trigger_reason() {
   cat "$TRIGGER_REASON_FILE" 2>/dev/null || echo "unknown"
+}
+
+# ─── Synology deploy status ───────────────────────────────────────────────────
+get_deploy_status_field() {
+  local field="$1"
+  grep "^${field}=" "$DEPLOY_STATUS_FILE" 2>/dev/null | cut -d= -f2-
+}
+
+retry_synology_deploy() {
+  local primary_domain lineage
+  primary_domain=$(get_primary_domain)
+  lineage="/etc/letsencrypt/live/${primary_domain}"
+
+  if [[ ! -f "${lineage}/fullchain.pem" ]]; then
+    echo "$LOG_PREFIX No cert found at $lineage — skipping Synology deploy retry"
+    return 0
+  fi
+
+  echo "$LOG_PREFIX Retrying Synology DSM upload for $lineage (domains: $CERT_DOMAINS)..."
+  RENEWED_LINEAGE="$lineage" /scripts/deploy-hook.sh \
+    || echo "$LOG_PREFIX WARNING: deploy-hook returned non-zero (unexpected)"
+}
+
+ensure_synology_deployed() {
+  if [[ "$SYNOLOGY_DEPLOY" != "true" ]]; then
+    return 0
+  fi
+
+  local primary_domain lineage
+  primary_domain=$(get_primary_domain)
+  lineage="/etc/letsencrypt/live/${primary_domain}"
+
+  if [[ ! -f "${lineage}/fullchain.pem" ]]; then
+    echo "$LOG_PREFIX SYNOLOGY_DEPLOY=true but no cert exists yet — will deploy after first issuance"
+    return 0
+  fi
+
+  if [[ ! -f "$DEPLOY_STATUS_FILE" ]]; then
+    echo "$LOG_PREFIX Synology deploy status file not found — attempting deploy"
+    retry_synology_deploy
+    return 0
+  fi
+
+  local stored_status stored_domains
+  stored_status=$(get_deploy_status_field "STATUS")
+  stored_domains=$(get_deploy_status_field "DOMAINS")
+
+  if [[ "$stored_status" != "SUCCESS" ]]; then
+    echo "$LOG_PREFIX Previous Synology deploy status: ${stored_status:-unknown} — retrying"
+    retry_synology_deploy
+    return 0
+  fi
+
+  local current_norm stored_norm
+  current_norm=$(normalize_domains "$CERT_DOMAINS")
+  stored_norm=$(normalize_domains "$stored_domains")
+
+  if [[ "$current_norm" != "$stored_norm" ]]; then
+    echo "$LOG_PREFIX Domains changed since last Synology deploy"
+    echo "$LOG_PREFIX   Was: $stored_domains"
+    echo "$LOG_PREFIX   Now: $CERT_DOMAINS"
+    retry_synology_deploy
+    return 0
+  fi
+
+  echo "$LOG_PREFIX Synology deploy up to date (last deployed: $(get_deploy_status_field "TIMESTAMP"))"
 }
 
 # ─── Cert renewal check ──────────────────────────────────────────────────────
@@ -390,6 +457,8 @@ do_cert_check() {
   esac
 
   unset CERT_TRIGGER_REASON
+
+  ensure_synology_deployed
 }
 
 # ─── Log versions ─────────────────────────────────────────────────────────────
