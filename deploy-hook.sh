@@ -28,12 +28,13 @@ if [[ "$SYNOLOGY_DEPLOY" == "true" ]]; then
     exit 0
   fi
 
-  # Login and get session ID
+  # Login and get session ID + SynoToken (required for CSRF protection)
   echo "$LOG_PREFIX Authenticating with DSM..."
   LOGIN_RESPONSE=$(curl -sk \
-    "$SYNOLOGY_HOST/webapi/auth.cgi?api=SYNO.API.Auth&version=3&method=login&account=${SYNOLOGY_USER}&passwd=${SYNOLOGY_PASS}&session=synology-certbot-cloudflare&format=sid") || true
+    "$SYNOLOGY_HOST/webapi/auth.cgi?api=SYNO.API.Auth&version=3&method=login&account=${SYNOLOGY_USER}&passwd=${SYNOLOGY_PASS}&session=synology-certbot-cloudflare&format=sid&enable_syno_token=yes") || true
 
   SID=$(echo "$LOGIN_RESPONSE" | jq -r '.data.sid // empty')
+  SYNO_TOKEN=$(echo "$LOGIN_RESPONSE" | jq -r '.data.synotoken // empty')
 
   if [[ -z "$SID" ]]; then
     echo "$LOG_PREFIX ERROR: Failed to authenticate with Synology DSM — check SYNOLOGY_HOST, SYNOLOGY_USER, SYNOLOGY_PASS" >&2
@@ -44,16 +45,20 @@ if [[ "$SYNOLOGY_DEPLOY" == "true" ]]; then
 
   echo "$LOG_PREFIX Authenticated with DSM (session: ${SID:0:8}...)"
 
-  # Upload certificate
+  # Log cert key type — DSM requires RSA; ECDSA will cause error 5511
+  CERT_KEY_TYPE=$(openssl x509 -in "${RENEWED_LINEAGE}/cert.pem" -text -noout 2>/dev/null \
+    | grep "Public Key Algorithm" | head -1 | xargs || echo "unknown")
+  echo "$LOG_PREFIX Cert key type: $CERT_KEY_TYPE"
+
+  # Upload certificate — SynoToken must be in URL and X-SYNO-TOKEN header (DSM CSRF protection)
   echo "$LOG_PREFIX Uploading certificate from $RENEWED_LINEAGE..."
-  UPLOAD_RESPONSE=$(curl -sk -X POST "$SYNOLOGY_HOST/webapi/entry.cgi" \
-    -F "api=SYNO.Core.Certificate" \
-    -F "method=import" \
-    -F "version=1" \
-    -F "_sid=$SID" \
+  UPLOAD_RESPONSE=$(curl -sk -X POST \
+    "$SYNOLOGY_HOST/webapi/entry.cgi?api=SYNO.Core.Certificate&method=import&version=1&SynoToken=${SYNO_TOKEN}&_sid=${SID}" \
+    -H "X-SYNO-TOKEN: ${SYNO_TOKEN}" \
     -F "key=@${RENEWED_LINEAGE}/privkey.pem" \
-    -F "certificate=@${RENEWED_LINEAGE}/cert.pem" \
-    -F "intermediate=@${RENEWED_LINEAGE}/chain.pem" \
+    -F "cert=@${RENEWED_LINEAGE}/cert.pem" \
+    -F "inter_cert=@${RENEWED_LINEAGE}/chain.pem" \
+    -F "desc=synology-certbot-cloudflare" \
     -F "as_default=true") || true
 
   SUCCESS=$(echo "$UPLOAD_RESPONSE" | jq -r '.success // false')

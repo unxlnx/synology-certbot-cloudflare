@@ -334,6 +334,7 @@ run_certbot() {
     --dns-cloudflare-propagation-seconds 30 \
     --server "$ACME_SERVER" \
     --deploy-hook /scripts/deploy-hook.sh \
+    --key-type rsa \
     $force_flag \
     $expand_flag \
     $domain_args \
