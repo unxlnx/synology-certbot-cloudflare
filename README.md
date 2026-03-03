@@ -43,7 +43,7 @@ synology-certbot-cloudflare/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/youruser/synology-certbot-cloudflare.git
+git clone https://github.com/unxlnx/synology-certbot-cloudflare.git
 cd synology-certbot-cloudflare
 ```
 
