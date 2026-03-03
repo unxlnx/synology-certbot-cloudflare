@@ -1,0 +1,28 @@
+{
+  "$schema": "https://docs.renovateapp.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "schedule": ["before 6am on monday"],
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "Group certbot and its Cloudflare plugin — they version-lock together",
+      "matchManagers": ["pip_requirements"],
+      "matchPackageNames": ["certbot", "certbot-dns-cloudflare"],
+      "groupName": "certbot",
+      "addLabels": ["python"]
+    },
+    {
+      "description": "Auto-merge GitHub Actions minor and patch updates",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true,
+      "addLabels": ["github-actions"]
+    },
+    {
+      "description": "Alpine base image updates",
+      "matchManagers": ["dockerfile"],
+      "matchPackageNames": ["alpine"],
+      "addLabels": ["docker"]
+    }
+  ]
+}
