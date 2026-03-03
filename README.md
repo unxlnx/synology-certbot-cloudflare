@@ -11,11 +11,12 @@ A lightweight, self-contained Docker container that automates Let's Encrypt cert
 - Staging and production modes to avoid rate limits during testing
 - Configurable renewal check interval and expiry threshold
 - Force renewal via `.env` flag — auto-resets after success
-- Live `.env` monitoring via inotify — detects domain changes and triggers renewal without restarting the container
-- Optional Synology DSM certificate deployment via API
+- Live `.env` monitoring — detects domain changes and triggers renewal without restarting the container
+- Optional Synology DSM certificate deployment via API, with status tracking and automatic retry on failure
 - Timestamped logging for all output
 - Multi-arch image build (amd64 + arm64)
 - Automated CI/CD with GitHub Actions — builds, scans (Trivy), and publishes to GHCR
+- Renovate-managed dependencies — pip packages and base image kept up to date automatically
 
 ---
 
@@ -31,7 +32,9 @@ synology-certbot-cloudflare/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── entrypoint.sh                   # Main runner script
-├── deploy-hook.sh                  # Called by certbot after successful renewal
+├── deploy-hook.sh                  # Synology DSM deploy, called after cert renewal
+├── requirements.txt                # Pinned pip packages (managed by Renovate)
+├── renovate.json                   # Renovate dependency update config
 ├── .gitignore
 └── README.md
 ```
@@ -134,7 +137,7 @@ The container will issue a real trusted cert and auto-reset `FORCE_RENEW=false`.
 
 ## Adding or Removing Domains
 
-Edit `CERT_DOMAINS` in `config/.env` and save. The inotify watcher detects the change, compares the new domain list against the last known snapshot, and automatically triggers a new cert covering all listed domains. No restart needed.
+Edit `CERT_DOMAINS` in `config/.env` and save. The watcher detects the change, compares the new domain list against the last known snapshot, and automatically triggers a new cert covering all listed domains. No restart needed.
 
 ```dotenv
 # Before
@@ -160,18 +163,21 @@ Use this when:
 
 ## Synology DSM Deployment
 
-When `SYNOLOGY_DEPLOY=true`, the deploy hook calls the Synology DSM API after every successful renewal to upload the new cert and set it as the default.
+When `SYNOLOGY_DEPLOY=true`, the container uploads the renewed certificate to your Synology NAS via the DSM API and sets it as the default certificate.
 
 Requirements:
 - DSM user with administrator privileges
 - HTTPS access to your NAS from the container (port 5001 by default)
-- `jq` is included in the image — no extra setup needed
 
-The deploy hook:
-1. Authenticates with DSM to obtain a session ID
-2. Uploads `privkey.pem`, `cert.pem`, and `chain.pem`
+The deploy process:
+1. Authenticates with DSM and obtains a session token (SynoToken)
+2. Uploads `privkey.pem`, `cert.pem`, and `chain.pem` to the DSM certificate API
 3. Sets the uploaded cert as the default
-4. Logs out cleanly
+4. Logs out and records the deploy result to `/config/.synology_deploy_status`
+
+**Deploy status tracking and retry:** If the upload fails, the status is written to `/config/.synology_deploy_status`. On every subsequent cert check the container detects the failed status and retries automatically — no manual intervention required.
+
+> **Note:** Certbot is configured to issue RSA certificates (`--key-type rsa`). The Synology DSM certificate import API does not support ECDSA/ECC certificates and will reject them with an error.
 
 ---
 
@@ -182,7 +188,7 @@ The deploy hook:
 | `synology-certbot-cloudflare-certs` | Certificate files (`/etc/letsencrypt`) |
 | `synology-certbot-cloudflare-data` | Certbot working data (`/var/lib/letsencrypt`) |
 | `synology-certbot-cloudflare-logs` | Certbot logs (`/var/log/letsencrypt`) |
-| `./config:/config` | Config directory — contains `.env` and generated `cloudflare.ini` |
+| `./config:/config` | Config directory — contains `.env`, generated `cloudflare.ini`, and deploy status |
 
 Cert volumes are named Docker volumes and persist across container restarts and rebuilds.
 
@@ -190,23 +196,30 @@ Cert volumes are named Docker volumes and persist across container restarts and 
 
 ## Logging
 
-All output — including certbot's own output — is timestamped uniformly:
+All output is timestamped uniformly:
 
 ```
-[2026-03-02 15:36:31] [synology-certbot-cloudflare] Versions:
-[2026-03-02 15:36:31] [synology-certbot-cloudflare]   certbot          : certbot 2.11.0
-[2026-03-02 15:36:31] [synology-certbot-cloudflare]   python           : Python 3.11.9
-[2026-03-02 15:36:31] [synology-certbot-cloudflare]   dns-cloudflare   : certbot-dns-cloudflare 0.3.0
-[2026-03-02 15:36:31] [synology-certbot-cloudflare] ════════════════════════════════════════
-[2026-03-02 15:36:31] [synology-certbot-cloudflare]  synology-certbot-cloudflare starting
-[2026-03-02 15:36:31] [synology-certbot-cloudflare]  Environment : production
-[2026-03-02 15:36:31] [synology-certbot-cloudflare]  Domains     : example.com,*.example.com
-[2026-03-02 15:36:31] [synology-certbot-cloudflare]  Check every : 12h
-[2026-03-02 15:36:31] [synology-certbot-cloudflare]  Renew within: 30 days
-[2026-03-02 15:36:31] [synology-certbot-cloudflare]  Synology    : false
-[2026-03-02 15:36:31] [synology-certbot-cloudflare] ════════════════════════════════════════
-[2026-03-02 15:36:32] [synology-certbot-cloudflare] Cert for example.com expires in 87 days (threshold: 30) — OK
-[2026-03-02 15:36:32] [synology-certbot-cloudflare] Sleeping 12h until next check...
+[2026-03-03 09:32:44] [synology-certbot-cloudflare] ════════════════════════════════════════
+[2026-03-03 09:32:44] [synology-certbot-cloudflare]  synology-certbot-cloudflare starting
+[2026-03-03 09:32:44] [synology-certbot-cloudflare]  Environment : production
+[2026-03-03 09:32:44] [synology-certbot-cloudflare]  Domains     : example.com,*.example.com
+[2026-03-03 09:32:44] [synology-certbot-cloudflare]  Check every : 12h
+[2026-03-03 09:32:44] [synology-certbot-cloudflare]  Renew within: 30 days
+[2026-03-03 09:32:44] [synology-certbot-cloudflare]  Synology    : true
+[2026-03-03 09:32:44] [synology-certbot-cloudflare] ════════════════════════════════════════
+[2026-03-03 09:32:45] [synology-certbot-cloudflare] Cert for example.com expires in 87 days (threshold: 30) — OK
+[2026-03-03 09:32:45] [synology-certbot-cloudflare] Synology deploy up to date (last deployed: 2026-03-03 09:10:55)
+[2026-03-03 09:32:45] [synology-certbot-cloudflare] Sleeping 12h until next check...
+```
+
+Synology deploy output appears inline at the same log level:
+
+```
+[2026-03-03 09:32:50] [synology-certbot-cloudflare:deploy-hook] Deploying to Synology DSM at https://your-nas:5001...
+[2026-03-03 09:32:50] [synology-certbot-cloudflare:deploy-hook] Authenticated with DSM (session: ZkEeCMSS...)
+[2026-03-03 09:32:50] [synology-certbot-cloudflare:deploy-hook] Cert key type: rsaEncryption
+[2026-03-03 09:32:50] [synology-certbot-cloudflare:deploy-hook] Uploading certificate from /etc/letsencrypt/live/example.com...
+[2026-03-03 09:32:51] [synology-certbot-cloudflare:deploy-hook] Successfully deployed cert to Synology DSM
 ```
 
 ---
@@ -234,7 +247,7 @@ The included workflow at `.github/workflows/build-and-publish.yml` runs on every
 **Pulling the image:**
 
 ```bash
-docker pull ghcr.io/youruser/synology-certbot-cloudflare:latest
+docker pull ghcr.io/unxlnx/synology-certbot-cloudflare:latest
 ```
 
 To use the pre-built image instead of building locally, replace the `build:` key in `docker-compose.yml`:
@@ -244,6 +257,20 @@ services:
   synology-certbot-cloudflare:
     image: ghcr.io/unxlnx/synology-certbot-cloudflare:latest
 ```
+
+---
+
+## Dependency Management — Renovate
+
+[Renovate](https://docs.renovateapp.com/) is configured via `renovate.json` to keep dependencies up to date automatically:
+
+| Dependency | Update behaviour |
+|---|---|
+| `certbot` + `certbot-dns-cloudflare` | Grouped — single PR for both (they always share the same version) |
+| `alpine` base image | PR opened for new versions |
+| GitHub Actions | Minor and patch updates auto-merged |
+
+Updates run on a weekly schedule (Monday before 6am).
 
 ---
 
@@ -279,6 +306,14 @@ You have hit Let's Encrypt's production rate limits. Switch to `LETSENCRYPT_ENV=
 **DNS propagation failures**
 
 Increase `--dns-cloudflare-propagation-seconds` in `entrypoint.sh` if your DNS changes are slow to propagate. The default is 30 seconds.
+
+**Synology DSM upload fails with error 119**
+
+The DSM session token (SynoToken) was not accepted. Ensure the DSM user has full administrator privileges and that HTTPS access to the NAS is reachable from the container.
+
+**Synology DSM upload fails with error 5511**
+
+The certificate format was rejected by DSM. DSM's certificate import API does not support ECDSA/ECC certificates. The container issues RSA certs by default (`--key-type rsa` in certbot) — if you previously issued an ECDSA cert, set `FORCE_RENEW=true` to replace it with a new RSA cert.
 
 ---
 
