@@ -2,6 +2,8 @@ FROM alpine:3.23
 
 LABEL description="synology-certbot-cloudflare: Certbot with Cloudflare DNS plugin and Synology deploy support"
 
+COPY requirements.txt /tmp/requirements.txt
+
 RUN apk add --no-cache \
     python3 \
     py3-pip \
@@ -14,8 +16,7 @@ RUN apk add --no-cache \
     ca-certificates \
     inotify-tools \
     && pip3 install --no-cache-dir --break-system-packages \
-        certbot \
-        certbot-dns-cloudflare \
+        -r /tmp/requirements.txt \
     && rm -rf /var/cache/apk/* /tmp/*
 
 RUN mkdir -p \
